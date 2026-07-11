@@ -13,6 +13,7 @@ services:
       - N8N_PORT=5678
       - N8N_PROTOCOL=http
       - WEBHOOK_URL=http://localhost:5678/
+      - N8N_RESTRICT_FILE_ACCESS_TO=/data
 
       # Encryption key for stored credentials. MUST stay constant across restarts,
       # or saved credentials become unreadable.

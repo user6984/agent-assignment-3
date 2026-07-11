@@ -26,9 +26,15 @@
  * Reading: docs/planning-primer.md §"STRIPS-style assumptions and where they break"
  */
 
-// Inputs are merged upstream from two reads — inventory and sales — so this
-// node sees a heterogeneous list. Partition them by which fields are present.
-const all = $input.all().map(i => i.json);
+// This node's main input only carries the Master Planner's routing signal
+// (that's what fires the branch). The actual inventory + sales rows are
+// pulled by cross-node reference -- both CSV-parse nodes already ran
+// earlier in this same execution -- giving a heterogeneous list. Partition
+// them by which fields are present.
+const all = [
+  ...$('Read Inventory JSON').all().map(i => i.json),
+  ...$('Read Sales JSON').all().map(i => i.json),
+];
 
 // Default ordering cost (S in the EOQ formula). In production this would
 // vary by supplier and channel; we hard-code a single value so the focus
@@ -66,8 +72,8 @@ function annualDemand(salesForSku) {
  *       and dividing by zero holding cost is meaningless.)
  */
 function eoq(D, S, H) {
-  // TODO [medium] — LO-2: classical optimization
-  throw new Error("TODO [medium]: implement eoq()");
+  if (D === 0 || H === 0) return 0;
+  return Math.round(Math.sqrt((2 * D * S) / H));
 }
 
 // ---- TODO #2 — assumption-violation detection -----------------------------
@@ -101,8 +107,48 @@ function eoq(D, S, H) {
  *       trigger multiple flags — that's expected and useful downstream.
  */
 function detectViolations(inv, salesSeries) {
-  // TODO [hard] — LO-4: knowing when classical models fail
-  throw new Error("TODO [hard]: implement detectViolations()");
+  const flags = [];
+  if (salesSeries.length === 0) return flags;
+
+  const mean = rows =>
+    rows.length === 0 ? 0 : rows.reduce((acc, r) => acc + Number(r.units_sold), 0) / rows.length;
+
+  const recentThree = salesSeries.slice(-3);
+  const priorNine = salesSeries.slice(0, Math.max(0, salesSeries.length - 3));
+  const firstThree = salesSeries.slice(0, 3);
+
+  const recentMean = mean(recentThree);
+  const priorMean = mean(priorNine);
+  const firstMean = mean(firstThree);
+
+  if (priorMean > 0 && recentMean > 2.5 * priorMean) {
+    flags.push("viral_spike");
+  }
+
+  if (firstMean > 0 && recentMean < 0.5 * firstMean) {
+    flags.push("declining");
+  }
+
+  const D = annualDemand(salesSeries);
+  if (D < 60) {
+    flags.push("low_velocity");
+  }
+
+  // Volatility = coefficient of variation across the full series. A long
+  // lead time only matters if demand can't be trusted to hold steady while
+  // we wait for the reorder to arrive.
+  const overallMean = mean(salesSeries);
+  const variance = overallMean > 0
+    ? salesSeries.reduce((acc, r) => acc + Math.pow(Number(r.units_sold) - overallMean, 2), 0) / salesSeries.length
+    : 0;
+  const cv = overallMean > 0 ? Math.sqrt(variance) / overallMean : 0;
+  const volatile = cv > 0.5;
+
+  if (Number(inv.lead_time_days) > 28 && volatile) {
+    flags.push("long_lead_time");
+  }
+
+  return flags;
 }
 
 // ---- Main loop (provided) -------------------------------------------------

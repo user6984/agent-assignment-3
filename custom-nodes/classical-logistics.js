@@ -17,7 +17,12 @@
  * Reading: docs/planning-primer.md §"Classical search and the cost of optimality"
  */
 
-// Inputs are merged upstream — shipping requests AND the catalogue of options.
+// The main input carries only the request(s) routed here by the "Use
+// Classical Fallback?" IF node (already merged with the LLM's parsed
+// decision upstream). The options catalogue is pulled by cross-node
+// reference -- it already ran earlier in this same execution -- and merged
+// in here so this node sees the same heterogeneous list its main loop
+// expects.
 //
 // A request: { type: "request", request_id, weight_kg, origin_region,
 //              dest_region, deadline_days, perishable }
@@ -25,7 +30,10 @@
 //              destination_region, transit_days, cost_per_kg,
 //              max_weight_kg, supports_perishable }
 
-const all = $input.all().map(i => i.json);
+const all = [
+  ...$input.all().map(i => i.json),
+  ...$('Read Shipping JSON').all().map(i => ({ type: "option", ...i.json })),
+];
 const requests = all.filter(x => x.type === "request");
 const options  = all.filter(x => x.type === "option");
 
@@ -58,8 +66,24 @@ const options  = all.filter(x => x.type === "option");
  * the LLM branch, not because we couldn't afford the optimal search.
  */
 function pickCheapestFeasible(req, options) {
-  // TODO [hard] — LO-2: classical search baselines
-  throw new Error("TODO [hard]: implement pickCheapestFeasible()");
+  const feasible = options.filter(opt =>
+    opt.origin_region === req.origin_region &&
+    opt.destination_region === req.dest_region &&
+    opt.transit_days <= req.deadline_days &&
+    opt.max_weight_kg >= req.weight_kg &&
+    (!req.perishable || opt.supports_perishable)
+  );
+
+  if (feasible.length === 0) return null;
+
+  const priced = feasible.map(opt => ({
+    ...opt,
+    total_cost_usd: req.weight_kg * opt.cost_per_kg,
+  }));
+
+  return priced.reduce((cheapest, opt) =>
+    opt.total_cost_usd < cheapest.total_cost_usd ? opt : cheapest
+  );
 }
 
 // ---- Main loop (provided) -------------------------------------------------
